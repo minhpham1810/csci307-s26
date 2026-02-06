@@ -3,8 +3,8 @@
 // Lab 01: Review C - Structures and Memory Management
 // Starter code (c) 2025 Marchiori
 //
-// NAME: 
-// DATE:
+// NAME: Minh Pham
+// DATE: 2/6/2026
 //
 // =================================================================================
 // The #include directive is used to import functionality from C's standard
@@ -57,6 +57,28 @@ char* get_token(char** str, char* sep, char* msg){
  */
 Track* parse_track(char* line, char* sep, Track* track) {
     // TODO
+    char **lptr = &line; 
+    strncpy(track->id, get_token(lptr, sep, "track_id"), ID_LEN);
+    track->id[ID_LEN] = '\0';
+    
+    track->name = strdup(get_token(lptr, sep, "track_name"));
+    
+    track->artist = strdup(get_token(lptr, sep, "track_artist"));
+    
+    track->popularity = atol(get_token(lptr, sep, "track_popularity"));
+
+    strncpy(track->album_id, get_token(lptr, sep, "track_album_id"), ID_LEN);
+    track->album_id[ID_LEN] = '\0';
+    
+    track->danceability = atof(get_token(lptr, sep, "danceability"));
+    
+    char* duration_token = get_token(lptr, sep, "duration_ms");
+    track->duration_ms = atol(duration_token);
+
+    size_t len = strlen(duration_token);
+    if (len > 0 && duration_token[len - 1] == '\n') {
+        track->duration_ms = atol(duration_token);
+    }
     return track;
 }
 
@@ -73,6 +95,51 @@ struct tracklist_node * load_csv(const char *filename, char* sep, long int* num_
     // while (gets) { parse_track() ... }
 
     // Return the head of a linked list of tracks (struct tracklist_node)
+    FILE *file;
+    struct tracklist_node *head = NULL;
+    struct tracklist_node *current = NULL;
+    char* line = NULL;
+    *num_tracks = 0;
+
+    file = fopen(filename, "r");
+    if (file == NULL) {
+        perror("Error opening file");
+        return NULL;
+    }
+    
+    line = malloc(MAX_LINE_LENGTH + 1);
+    if (line == NULL) {
+        perror("Error allocating memory");
+        fclose(file);
+        return NULL;
+    }
+
+    if (fgets(line, MAX_LINE_LENGTH, file) == NULL) {
+        free(line);
+        fclose(file);
+        return NULL;
+    }
+
+    while (fgets(line, MAX_LINE_LENGTH, file) != NULL) {
+        struct tracklist_node *new_node = (struct tracklist_node*)calloc(1, sizeof(struct tracklist_node));
+        new_node->t = (Track*)malloc(sizeof(Track));
+        parse_track(line, sep, new_node->t);
+
+        if (head == NULL) {
+            head = new_node;
+            current = head;
+        } else {
+            current->next = new_node;
+            current = new_node;
+        }
+        (*num_tracks)++;
+    }
+
+    printf("Successfully read %ld tracks from %s.\n", *num_tracks, filename);
+
+    fclose(file);
+    free(line);
+    return head;
     return NULL;
 }
 
@@ -113,7 +180,59 @@ void print_tracklist(struct tracklist_node *list, long int num_tracks) {
  * @param head A pointer to the head of the list to be freed.
  */
 void free_tracklist(struct tracklist_node *head) {
-    // TODO
+    struct tracklist_node *current = head;
+    struct tracklist_node *next;
+
+    while (current != NULL) {
+        next = current->next;
+
+        free(current->t->name);
+        free(current->t->artist);
+
+        free(current->t);
+
+        free(current);
+
+        current = next;
+    }
+}
+/**
+ * @brief Comparison function to sort tracks by popularity (descending).
+ */
+int compare_track_popularity(const void *a, const void *b) {
+    Track *track_a = *(Track **)a;
+    Track *track_b = *(Track **)b;
+    
+    if (track_b->popularity > track_a->popularity) return 1;
+    if (track_b->popularity < track_a->popularity) return -1;
+    return 0;
+}
+
+/**
+ * @brief Comparison function to sort tracks by duration (descending).
+ */
+int compare_track_duration(const void *a, const void *b) {
+    Track *track_a = *(Track **)a;
+    Track *track_b = *(Track **)b;
+    
+    if (track_b->duration_ms > track_a->duration_ms) return 1;
+    if (track_b->duration_ms < track_a->duration_ms) return -1;
+    return 0;
+}
+
+/**
+ * @brief Comparison function to sort tracks by danceability, then popularity (both descending).
+ */
+int compare_track_danceability_then_popularity(const void *a, const void *b) {
+    Track *track_a = *(Track **)a;
+    Track *track_b = *(Track **)b;
+    
+    if (track_b->danceability > track_a->danceability) return 1;
+    if (track_b->danceability < track_a->danceability) return -1;
+    
+    if (track_b->popularity > track_a->popularity) return 1;
+    if (track_b->popularity < track_a->popularity) return -1;
+    return 0;
 }
 
 /**
@@ -128,7 +247,25 @@ struct tracklist_node * sort_tracklist(
     long int num_songs,
     int (*compare)(const void *, const void *)){
 
-    return NULL;
+    if (num_songs < 2) {
+        return list;
+    }
+    Track **array = malloc(num_songs * sizeof(Track *));
+    struct tracklist_node *current = list;
+    for (long int i = 0; i < num_songs; i++) {
+        array[i] = current->t;
+        current = current->next;
+    }
+    qsort(array, num_songs, sizeof(Track *), compare);
+
+
+    current = list;
+    for (long int i = 0; i < num_songs; i++) {
+        current->t = array[i];
+        current = current->next;
+    }
+    free(array);
+    return list;
 }
 
 /**
@@ -150,15 +287,15 @@ int main(int argc, char** argv) {
 
     // TODO print the tracklist sorted various ways.    
     printf("Top 5 tracks by popularity\n");
-    //print_tracklist(sort_tracklist(list, num_tracks, compare_track_popularity), 5);
+    print_tracklist(sort_tracklist(list, num_tracks, compare_track_popularity), 5);
     printf("\n");
     
     printf("Top 5 tracks by duration\n");
-    //print_tracklist(sort_tracklist(list, num_tracks, compare_track_duration), 5);
+    print_tracklist(sort_tracklist(list, num_tracks, compare_track_duration), 5);
     printf("\n");
 
     printf("Top 5 tracks by danceability then popularity\n");
-    //print_tracklist(sort_tracklist(list, num_tracks, compare_track_danceability_then_popularity), 5);
+    print_tracklist(sort_tracklist(list, num_tracks, compare_track_danceability_then_popularity), 5);
     printf("\n");    
 
     free_tracklist(list);
