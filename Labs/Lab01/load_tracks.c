@@ -56,14 +56,21 @@ char* get_token(char** str, char* sep, char* msg){
  * @return A pointer to the populated Track struct.
  */
 Track* parse_track(char* line, char* sep, Track* track) {
-    // TODO
     char **lptr = &line; 
+    
     strncpy(track->id, get_token(lptr, sep, "track_id"), ID_LEN);
     track->id[ID_LEN] = '\0';
     
-    track->name = strdup(get_token(lptr, sep, "track_name"));
+    char* name_tok = get_token(lptr, sep, "track_name");
+    track->name = strdup(name_tok);
+    if (track->name == NULL) exit(EXIT_FAILURE); 
     
-    track->artist = strdup(get_token(lptr, sep, "track_artist"));
+    char* artist_tok = get_token(lptr, sep, "track_artist");
+    track->artist = strdup(artist_tok);
+    if (track->artist == NULL) {
+        free(track->name); 
+        exit(EXIT_FAILURE);
+    }
     
     track->popularity = atol(get_token(lptr, sep, "track_popularity"));
 
@@ -71,14 +78,8 @@ Track* parse_track(char* line, char* sep, Track* track) {
     track->album_id[ID_LEN] = '\0';
     
     track->danceability = atof(get_token(lptr, sep, "danceability"));
-    
-    char* duration_token = get_token(lptr, sep, "duration_ms");
-    track->duration_ms = atol(duration_token);
+    track->duration_ms = atol(get_token(lptr, sep, "duration_ms"));
 
-    size_t len = strlen(duration_token);
-    if (len > 0 && duration_token[len - 1] == '\n') {
-        track->duration_ms = atol(duration_token);
-    }
     return track;
 }
 
@@ -91,25 +92,17 @@ Track* parse_track(char* line, char* sep, Track* track) {
  * @return The head of a linked list of Track structs, or NULL if an error occurs.
  */
 struct tracklist_node * load_csv(const char *filename, char* sep, long int* num_tracks){    
-    // TODO, read the file and create track structures
-    // while (gets) { parse_track() ... }
-
-    // Return the head of a linked list of tracks (struct tracklist_node)
-    FILE *file;
-    struct tracklist_node *head = NULL;
-    struct tracklist_node *current = NULL;
-    char* line = NULL;
-    *num_tracks = 0;
-
-    file = fopen(filename, "r");
+    FILE *file = fopen(filename, "r");
     if (file == NULL) {
         perror("Error opening file");
         return NULL;
     }
     
-    line = malloc(MAX_LINE_LENGTH + 1);
+    struct tracklist_node *head = NULL;
+    struct tracklist_node *current = NULL;
+    char* line = malloc(MAX_LINE_LENGTH + 1);
+    
     if (line == NULL) {
-        perror("Error allocating memory");
         fclose(file);
         return NULL;
     }
@@ -119,12 +112,15 @@ struct tracklist_node * load_csv(const char *filename, char* sep, long int* num_
         fclose(file);
         return NULL;
     }
-
     while (fgets(line, MAX_LINE_LENGTH, file) != NULL) {
         struct tracklist_node *new_node = (struct tracklist_node*)calloc(1, sizeof(struct tracklist_node));
+        if (new_node == NULL) break; 
         new_node->t = (Track*)malloc(sizeof(Track));
+        if (new_node->t == NULL) {
+            free(new_node);
+            break; 
+        }
         parse_track(line, sep, new_node->t);
-
         if (head == NULL) {
             head = new_node;
             current = head;
@@ -136,13 +132,10 @@ struct tracklist_node * load_csv(const char *filename, char* sep, long int* num_
     }
 
     printf("Successfully read %ld tracks from %s.\n", *num_tracks, filename);
-
     fclose(file);
     free(line);
     return head;
-    return NULL;
 }
-
 /**
  * @brief Prints the entire list of tracks in a formatted table.
  *
@@ -247,27 +240,32 @@ struct tracklist_node * sort_tracklist(
     long int num_songs,
     int (*compare)(const void *, const void *)){
 
-    if (num_songs < 2) {
+    if (num_songs < 2 || list == NULL) {
         return list;
     }
     Track **array = malloc(num_songs * sizeof(Track *));
+    if (array == NULL) {
+        fprintf(stderr, "Allocation failed in sort_tracklist\n");
+        return list; 
+    }
+
     struct tracklist_node *current = list;
-    for (long int i = 0; i < num_songs; i++) {
+    for (long int i = 0; i < num_songs && current != NULL; i++) {
         array[i] = current->t;
         current = current->next;
     }
+
     qsort(array, num_songs, sizeof(Track *), compare);
 
-
     current = list;
-    for (long int i = 0; i < num_songs; i++) {
+    for (long int i = 0; i < num_songs && current != NULL; i++) {
         current->t = array[i];
         current = current->next;
     }
+
     free(array);
     return list;
 }
-
 /**
  * @brief The main entry point of the program.
  *
