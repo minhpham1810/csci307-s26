@@ -1,0 +1,6 @@
+first_name|last_name|email|phone|city|country
+John|Doe|john.doe@example.com|555-1234|New York|USA
+Jane|Smith|jane.smith@email.net|555-5678|London|UK
+Bj"orn|Andersson|bjorn.a@email.se|555-9012|Stockholm|Sweden
+Chlo'e|Dubois|chloe.d@email.fr|555-3456|Paris|France
+Kenji|Tanaka|kenji.t@email.jp|555-8765|Tokyo|Japan
