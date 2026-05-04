@@ -11,9 +11,10 @@
 #include "record.h"
 #include "protocol.h"
 
+/* user list loaded at startup, kept in memory for the server's lifetime */
 static UserRecord *g_db_head = NULL;
 
-
+/* send an encrypted failure response to the client */
 static int send_error(int fd, const SessionKeys *keys, const char *msg) {
     ServerResponse resp;
     memset(&resp, 0, sizeof(resp));
@@ -23,6 +24,7 @@ static int send_error(int fd, const SessionKeys *keys, const char *msg) {
     return send_record(fd, keys, (unsigned char *)&resp, (int)sizeof(resp));
 }
 
+/* send an encrypted success response to the client */
 static int send_ok(int fd, const SessionKeys *keys, const char *msg) {
     ServerResponse resp;
     memset(&resp, 0, sizeof(resp));
@@ -32,6 +34,7 @@ static int send_ok(int fd, const SessionKeys *keys, const char *msg) {
     return send_record(fd, keys, (unsigned char *)&resp, (int)sizeof(resp));
 }
 
+/* req1 - return hardcoded account info (project 1 behavior) */
 static int cmd_req1(int fd, const SessionKeys *keys) {
     char buf[MAX_RESPONSE_LEN];
     AccountInfo info;
@@ -45,6 +48,7 @@ static int cmd_req1(int fd, const SessionKeys *keys) {
     return send_ok(fd, keys, buf);
 }
 
+/* req2 - return hardcoded transaction result (project 1 behavior) */
 static int cmd_req2(int fd, const SessionKeys *keys) {
     char buf[MAX_RESPONSE_LEN];
     TransactionResult tr;
@@ -57,6 +61,7 @@ static int cmd_req2(int fd, const SessionKeys *keys) {
     return send_ok(fd, keys, buf);
 }
 
+/* adduser - create a new USER-role account and save to disk */
 static int cmd_adduser(int fd, const SessionKeys *keys, const ClientCommand *cmd) {
     if (cmd->arg1[0] == '\0' || cmd->arg2[0] == '\0') {
         return send_error(fd, keys, "Usage: adduser <username> <password>");
@@ -70,6 +75,7 @@ static int cmd_adduser(int fd, const SessionKeys *keys, const ClientCommand *cmd
     return send_ok(fd, keys, "User added successfully.");
 }
 
+/* listusers - send back all usernames and roles (no hashes or salts) */
 static int cmd_listusers(int fd, const SessionKeys *keys) {
     char buf[MAX_RESPONSE_LEN];
     int offset = 0;
@@ -91,6 +97,7 @@ static int cmd_listusers(int fd, const SessionKeys *keys) {
     return send_ok(fd, keys, buf);
 }
 
+/* setrole - change a user's role and persist to disk */
 static int cmd_setrole(int fd, const SessionKeys *keys, const ClientCommand *cmd) {
     UserRole new_role;
     if (cmd->arg1[0] == '\0' || cmd->arg2[0] == '\0') {
@@ -108,7 +115,10 @@ static int cmd_setrole(int fd, const SessionKeys *keys, const ClientCommand *cmd
     return send_ok(fd, keys, "Role updated.");
 }
 
-
+/*
+ * Handshake: client sends a 48-byte pre-master secret in the clear.
+ * Both sides derive the same AES and HMAC keys from it.
+ */
 static int do_handshake(int fd, SessionKeys *keys_out) {
     unsigned char pms[TLS_PMS_LEN];
     int received = 0;
@@ -124,6 +134,11 @@ static int do_handshake(int fd, SessionKeys *keys_out) {
     return derive_session_keys(pms, keys_out);
 }
 
+/*
+ * Challenge-response auth over the encrypted channel.
+ * We always send a challenge and wait for the response before revealing
+ * whether the username was valid, to avoid leaking info via timing.
+ */
 static int do_auth(int fd, const SessionKeys *keys,
                    UserRole *role_out, char username_out[MAX_USERNAME_LEN]) {
     unsigned char buf[RECORD_MAX_PLAINTEXT];
@@ -145,8 +160,7 @@ static int do_auth(int fd, const SessionKeys *keys,
 
     user = find_user(g_db_head, req->username);
 
-    /* Step 2: build and send challenge regardless of lookup result
-     * (prevents username enumeration via timing). */
+    /* Step 2: send challenge - always send even if user not found */
     memset(&challenge, 0, sizeof(challenge));
     if (user != NULL) {
         strncpy(challenge.salt, user->salt, SALT_HEX_LEN);
@@ -166,7 +180,7 @@ static int do_auth(int fd, const SessionKeys *keys,
     }
     resp = (ClientResponse *)buf;
 
-    /* Step 4: verify. */
+    /* Step 4: verify response = SHA-256(nonce || stored_hash) */
     memset(&result, 0, sizeof(result));
     if (user == NULL ||
         !compute_response(challenge.nonce, user->stored_hash, expected) ||
@@ -193,6 +207,10 @@ static int do_auth(int fd, const SessionKeys *keys,
     return 1;
 }
 
+/*
+ * Post-auth command loop. Reads commands until the client exits or
+ * the connection drops. RBAC is enforced here before dispatching.
+ */
 static void do_command_loop(int fd, const SessionKeys *keys,
                             UserRole role, const char *username) {
     unsigned char buf[RECORD_MAX_PLAINTEXT];
@@ -211,6 +229,7 @@ static void do_command_loop(int fd, const SessionKeys *keys,
         cmd->arg1[MAX_CMD_ARG_LEN - 1] = '\0';
         cmd->arg2[MAX_CMD_ARG_LEN - 1] = '\0';
 
+        /* check if this command requires admin before doing anything */
         is_admin_cmd = (cmd->type == CMD_ADDUSER ||
                         cmd->type == CMD_LISTUSERS ||
                         cmd->type == CMD_SETROLE);
@@ -249,6 +268,7 @@ done:
     return;
 }
 
+/* handle one client connection: handshake -> auth -> commands */
 static void handle_client(int client_fd) {
     SessionKeys keys;
     UserRole role;
@@ -270,7 +290,6 @@ static void handle_client(int client_fd) {
     do_command_loop(client_fd, &keys, role, username);
     printf("Session ended: %s\n", username);
 }
-
 
 int main(int argc, char *argv[]) {
     int server_fd, client_fd;
@@ -312,6 +331,7 @@ int main(int argc, char *argv[]) {
         perror("listen"); close(server_fd); return 1;
     }
 
+    /* ignore SIGPIPE so the server doesn't crash if a client disconnects mid-write */
     signal(SIGPIPE, SIG_IGN);
     printf("Server listening on port %d\n", port);
 

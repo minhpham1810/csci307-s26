@@ -9,8 +9,7 @@
 #include "crypto_utils.h"
 #include "record.h"
 
-/* ---------- helpers -------------------------------------------------- */
-
+/* parse a line from stdin into a ClientCommand struct, returns 0 on unknown verb */
 static int parse_command(const char *line, ClientCommand *cmd) {
     char verb[MAX_CMD_ARG_LEN];
     int matched;
@@ -42,8 +41,10 @@ static int parse_command(const char *line, ClientCommand *cmd) {
     return 1;
 }
 
-/* ---------- protocol phases ------------------------------------------ */
-
+/*
+ * Handshake: generate a random 48-byte pre-master secret, send it to the
+ * server, then derive session keys from it on both sides.
+ */
 static int do_handshake(int fd, SessionKeys *keys_out) {
     unsigned char pms[TLS_PMS_LEN];
     int sent = 0;
@@ -63,6 +64,13 @@ static int do_handshake(int fd, SessionKeys *keys_out) {
     return derive_session_keys(pms, keys_out);
 }
 
+/*
+ * Run the challenge-response auth protocol:
+ *   1. send username
+ *   2. receive nonce + salt from server
+ *   3. compute response = SHA-256(nonce || SHA-256(salt || password))
+ *   4. send response, receive auth result
+ */
 static int do_auth(int fd, const SessionKeys *keys,
                    const char *username, const char *password,
                    UserRole *role_out) {
@@ -120,6 +128,7 @@ static int do_auth(int fd, const SessionKeys *keys,
     return 1;
 }
 
+/* interactive command loop - read from stdin, send to server, print reply */
 static void do_command_loop(int fd, const SessionKeys *keys,
                             const char *username) {
     char line[256];
@@ -133,6 +142,7 @@ static void do_command_loop(int fd, const SessionKeys *keys,
         fflush(stdout);
 
         if (fgets(line, sizeof(line), stdin) == NULL) {
+            /* EOF - send exit so the server closes cleanly */
             memset(&cmd, 0, sizeof(cmd));
             cmd.type = CMD_EXIT;
             send_record(fd, keys, (unsigned char *)&cmd, (int)sizeof(cmd));

@@ -6,6 +6,7 @@
 
 #include "crypto_utils.h"
 
+/* allocate and zero a new UserRecord node */
 static UserRecord *alloc_record(void) {
     UserRecord *r = malloc(sizeof(UserRecord));
     if (r != NULL) {

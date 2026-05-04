@@ -7,6 +7,7 @@
 
 #include "crypto_utils.h"
 
+/* write exactly len bytes, looping on short writes */
 static int send_all(int fd, const unsigned char *buf, int len) {
     int sent = 0;
     while (sent < len) {
@@ -19,6 +20,7 @@ static int send_all(int fd, const unsigned char *buf, int len) {
     return 1;
 }
 
+/* read exactly len bytes, returns 0 if the connection closes early */
 static int recv_all(int fd, unsigned char *buf, int len) {
     int received = 0;
     while (received < len) {
