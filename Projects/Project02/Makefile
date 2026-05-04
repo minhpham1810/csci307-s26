@@ -2,39 +2,26 @@ CC      = gcc
 CFLAGS  = -Wall -Wextra -std=c11 -g
 LDFLAGS = -lcrypto
 
+COMMON_OBJS = common.o crypto_utils.o
+
 all: client server
 
-server: server.o common.o crypto_utils.o db_utils.o record.o
-	$(CC) $(CFLAGS) -o server server.o common.o crypto_utils.o db_utils.o record.o $(LDFLAGS)
+server: server.o db_utils.o record.o $(COMMON_OBJS)
+	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
-client: client.o common.o crypto_utils.o record.o
-	$(CC) $(CFLAGS) -o client client.o common.o crypto_utils.o record.o $(LDFLAGS)
+client: client.o record.o $(COMMON_OBJS)
+	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
-init_db: init_db.o common.o crypto_utils.o db_utils.o
-	$(CC) $(CFLAGS) -o init_db init_db.o common.o crypto_utils.o db_utils.o $(LDFLAGS)
+init_db: init_db.o db_utils.o $(COMMON_OBJS)
+	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
-server.o: server.c common.h crypto_utils.h db_utils.h record.h protocol.h
-	$(CC) $(CFLAGS) -c server.c
-
-client.o: client.c common.h crypto_utils.h record.h
-	$(CC) $(CFLAGS) -c client.c
-
-
-db_utils.o: db_utils.c db_utils.h common.h crypto_utils.h
-	$(CC) $(CFLAGS) -c db_utils.c
-
-record.o: record.c record.h common.h crypto_utils.h
-	$(CC) $(CFLAGS) -c record.c
-
-init_db.o: init_db.c db_utils.h common.h
-	$(CC) $(CFLAGS) -c init_db.c
-
-common.o: common.c common.h
-	$(CC) $(CFLAGS) -c common.c
-
-crypto_utils.o: crypto_utils.c crypto_utils.h common.h
-	$(CC) $(CFLAGS) -c crypto_utils.c
+server.o:     server.c     common.h crypto_utils.h db_utils.h record.h protocol.h
+client.o:     client.c     common.h crypto_utils.h record.h
+init_db.o:    init_db.c    common.h db_utils.h
+db_utils.o:   db_utils.c   common.h crypto_utils.h db_utils.h
+record.o:     record.c     common.h crypto_utils.h record.h
+common.o:     common.c     common.h
+crypto_utils.o: crypto_utils.c common.h crypto_utils.h
 
 clean:
-	rm -f *.o client server init_db \
-	      client.exe server.exe init_db.exe
+	rm -f *.o client server init_db client.exe server.exe init_db.exe

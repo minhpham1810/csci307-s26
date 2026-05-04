@@ -8,6 +8,7 @@
 #include <openssl/rand.h>
 #include <openssl/hmac.h>
 #include <openssl/crypto.h>
+#include <openssl/kdf.h>
 
 int hash_password_salted(const char *password,
                          const char *salt,
@@ -189,32 +190,35 @@ int generate_pms(unsigned char pms[TLS_PMS_LEN]) {
     return RAND_bytes(pms, TLS_PMS_LEN) == 1;
 }
 
-static int sha256_labeled(const char *label,
-                          const unsigned char *input,
-                          int input_len,
-                          unsigned char out[SHA256_DIGEST_LEN]) {
-    EVP_MD_CTX *ctx = NULL;
-    unsigned int out_len = 0;
+/*
+ * Derive one key using HKDF-SHA256 (RFC 5869).
+ * No explicit salt — defaults to HashLen zeros per the spec.
+ * info string distinguishes the two session keys.
+ */
+static int hkdf_derive(const unsigned char *ikm, int ikm_len,
+                       const char *info,
+                       unsigned char *out, int out_len) {
+    EVP_PKEY_CTX *ctx;
+    size_t out_size = (size_t)out_len;
 
-    if (label == NULL || input == NULL || input_len < 0 || out == NULL) {
+    if (ikm == NULL || info == NULL || out == NULL) return 0;
+
+    ctx = EVP_PKEY_CTX_new_id(EVP_PKEY_HKDF, NULL);
+    if (ctx == NULL) return 0;
+
+    if (EVP_PKEY_derive_init(ctx) <= 0 ||
+        EVP_PKEY_CTX_set_hkdf_md(ctx, EVP_sha256()) <= 0 ||
+        EVP_PKEY_CTX_set1_hkdf_key(ctx, ikm, ikm_len) <= 0 ||
+        EVP_PKEY_CTX_add1_hkdf_info(ctx,
+            (const unsigned char *)info, (int)strlen(info)) <= 0 ||
+        EVP_PKEY_derive(ctx, out, &out_size) <= 0 ||
+        (int)out_size != out_len) {
+        EVP_PKEY_CTX_free(ctx);
         return 0;
     }
 
-    ctx = EVP_MD_CTX_new();
-    if (ctx == NULL) {
-        return 0;
-    }
-
-    if (EVP_DigestInit_ex(ctx, EVP_sha256(), NULL) != 1 ||
-        EVP_DigestUpdate(ctx, label, strlen(label)) != 1 ||
-        EVP_DigestUpdate(ctx, input, input_len) != 1 ||
-        EVP_DigestFinal_ex(ctx, out, &out_len) != 1) {
-        EVP_MD_CTX_free(ctx);
-        return 0;
-    }
-
-    EVP_MD_CTX_free(ctx);
-    return out_len == SHA256_DIGEST_LEN;
+    EVP_PKEY_CTX_free(ctx);
+    return 1;
 }
 
 int derive_session_keys(const unsigned char pms[TLS_PMS_LEN],
@@ -223,11 +227,13 @@ int derive_session_keys(const unsigned char pms[TLS_PMS_LEN],
         return 0;
     }
 
-    if (!sha256_labeled("enc", pms, TLS_PMS_LEN, keys->enc_key)) {
+    /* enc_key  = HKDF-SHA256(IKM=pms, info="enc",  len=32) */
+    if (!hkdf_derive(pms, TLS_PMS_LEN, "enc", keys->enc_key, AES_KEY_LEN)) {
         return 0;
     }
 
-    if (!sha256_labeled("hmac", pms, TLS_PMS_LEN, keys->hmac_key)) {
+    /* hmac_key = HKDF-SHA256(IKM=pms, info="hmac", len=32) */
+    if (!hkdf_derive(pms, TLS_PMS_LEN, "hmac", keys->hmac_key, HMAC_KEY_LEN)) {
         return 0;
     }
 
