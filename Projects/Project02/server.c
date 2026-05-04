@@ -4,6 +4,8 @@
 #include <signal.h>
 #include <unistd.h>
 #include <arpa/inet.h>
+#include <openssl/evp.h>
+#include <openssl/rsa.h>
 
 #include "common.h"
 #include "crypto_utils.h"
@@ -13,6 +15,30 @@
 
 /* user list loaded at startup, kept in memory for the server's lifetime */
 static UserRecord *g_db_head = NULL;
+
+/* RSA-2048 keypair generated once at startup, used for the PMS handshake */
+static EVP_PKEY *g_server_key = NULL;
+
+
+static int write_all(int fd, const unsigned char *buf, int len) {
+    int sent = 0;
+    while (sent < len) {
+        int n = (int)write(fd, buf + sent, (size_t)(len - sent));
+        if (n <= 0) return 0;
+        sent += n;
+    }
+    return 1;
+}
+
+static int read_all(int fd, unsigned char *buf, int len) {
+    int got = 0;
+    while (got < len) {
+        int n = (int)read(fd, buf + got, (size_t)(len - got));
+        if (n <= 0) return 0;
+        got += n;
+    }
+    return 1;
+}
 
 /* send an encrypted failure response to the client */
 static int send_error(int fd, const SessionKeys *keys, const char *msg) {
@@ -115,23 +141,75 @@ static int cmd_setrole(int fd, const SessionKeys *keys, const ClientCommand *cmd
     return send_ok(fd, keys, "Role updated.");
 }
 
+/* generate RSA-2048 keypair once at startup */
+static int generate_server_keypair(void) {
+    EVP_PKEY_CTX *ctx = EVP_PKEY_CTX_new_id(EVP_PKEY_RSA, NULL);
+    if (ctx == NULL) return 0;
+
+    if (EVP_PKEY_keygen_init(ctx) <= 0 ||
+        EVP_PKEY_CTX_set_rsa_keygen_bits(ctx, 2048) <= 0 ||
+        EVP_PKEY_keygen(ctx, &g_server_key) <= 0) {
+        EVP_PKEY_CTX_free(ctx);
+        return 0;
+    }
+    EVP_PKEY_CTX_free(ctx);
+    return 1;
+}
+
 /*
- * Handshake: client sends a 48-byte pre-master secret in the clear.
- * Both sides derive the same AES and HMAC keys from it.
+ * TLS-style handshake:
+ * 1. Send RSA public key (SPKI DER) to client
+ * 2. Receive PMS encrypted with that public key (OAEP padding)
+ * 3. Decrypt PMS and derive session keys
  */
 static int do_handshake(int fd, SessionKeys *keys_out) {
+    unsigned char *pub_der = NULL;
+    int pub_len;
+    uint32_t net_len;
+    unsigned char enc_pms[512]; /* 2048-bit RSA output = 256 bytes max */
+    uint32_t enc_net_len;
+    int enc_len;
     unsigned char pms[TLS_PMS_LEN];
-    int received = 0;
+    size_t pms_out_len = TLS_PMS_LEN;
+    EVP_PKEY_CTX *dec_ctx = NULL;
+    int ret = 0;
 
-    while (received < TLS_PMS_LEN) {
-        int n = (int)read(fd, pms + received, (size_t)(TLS_PMS_LEN - received));
-        if (n <= 0) {
-            return 0;
-        }
-        received += n;
+    if (g_server_key == NULL) return 0;
+
+    /* send public key as SPKI DER */
+    pub_len = i2d_PUBKEY(g_server_key, &pub_der);
+    if (pub_len <= 0 || pub_der == NULL) return 0;
+
+    net_len = htonl((uint32_t)pub_len);
+    if (!write_all(fd, (unsigned char *)&net_len, 4) ||
+        !write_all(fd, pub_der, pub_len)) {
+        OPENSSL_free(pub_der);
+        return 0;
     }
+    OPENSSL_free(pub_der);
 
-    return derive_session_keys(pms, keys_out);
+    /* receive encrypted PMS from client */
+    if (!read_all(fd, (unsigned char *)&enc_net_len, 4)) return 0;
+    enc_len = (int)ntohl(enc_net_len);
+    if (enc_len <= 0 || enc_len > (int)sizeof(enc_pms)) return 0;
+    if (!read_all(fd, enc_pms, enc_len)) return 0;
+
+    /* decrypt PMS with private key */
+    dec_ctx = EVP_PKEY_CTX_new(g_server_key, NULL);
+    if (dec_ctx == NULL) return 0;
+
+    if (EVP_PKEY_decrypt_init(dec_ctx) <= 0 ||
+        EVP_PKEY_CTX_set_rsa_padding(dec_ctx, RSA_PKCS1_OAEP_PADDING) <= 0 ||
+        EVP_PKEY_decrypt(dec_ctx, pms, &pms_out_len, enc_pms, (size_t)enc_len) <= 0 ||
+        pms_out_len != TLS_PMS_LEN) {
+        EVP_PKEY_CTX_free(dec_ctx);
+        return 0;
+    }
+    EVP_PKEY_CTX_free(dec_ctx);
+
+    ret = derive_session_keys(pms, keys_out);
+    memset(pms, 0, sizeof(pms)); /* clear PMS from stack */
+    return ret;
 }
 
 /*
@@ -229,6 +307,12 @@ static void do_command_loop(int fd, const SessionKeys *keys,
         cmd->arg1[MAX_CMD_ARG_LEN - 1] = '\0';
         cmd->arg2[MAX_CMD_ARG_LEN - 1] = '\0';
 
+        /* reject any command type outside the valid enum range */
+        if (cmd->type < CMD_REQ1 || cmd->type > CMD_EXIT) {
+            if (!send_error(fd, keys, "ERROR: Invalid command type.")) goto done;
+            continue;
+        }
+
         /* check if this command requires admin before doing anything */
         is_admin_cmd = (cmd->type == CMD_ADDUSER ||
                         cmd->type == CMD_LISTUSERS ||
@@ -309,6 +393,11 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
+    if (!generate_server_keypair()) {
+        fprintf(stderr, "Failed to generate RSA keypair\n");
+        return 1;
+    }
+
     g_db_head = load_database();
     if (g_db_head == NULL) {
         fprintf(stderr, "Warning: %s not found or empty. Run ./init_db first.\n", USER_DB_FILE);
@@ -343,6 +432,7 @@ int main(int argc, char *argv[]) {
         close(client_fd);
     }
 
+    EVP_PKEY_free(g_server_key);
     free_database(g_db_head);
     close(server_fd);
     return 0;

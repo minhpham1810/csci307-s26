@@ -19,6 +19,7 @@ server.o: server.c common.h crypto_utils.h db_utils.h record.h protocol.h
 client.o: client.c common.h crypto_utils.h record.h
 	$(CC) $(CFLAGS) -c client.c
 
+
 db_utils.o: db_utils.c db_utils.h common.h crypto_utils.h
 	$(CC) $(CFLAGS) -c db_utils.c
 

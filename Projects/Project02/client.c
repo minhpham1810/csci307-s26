@@ -4,10 +4,32 @@
 #include <unistd.h>
 #include <arpa/inet.h>
 #include <netdb.h>
+#include <openssl/evp.h>
+#include <openssl/rsa.h>
 
 #include "common.h"
 #include "crypto_utils.h"
 #include "record.h"
+
+static int write_all(int fd, const unsigned char *buf, int len) {
+    int sent = 0;
+    while (sent < len) {
+        int n = (int)write(fd, buf + sent, (size_t)(len - sent));
+        if (n <= 0) return 0;
+        sent += n;
+    }
+    return 1;
+}
+
+static int read_all(int fd, unsigned char *buf, int len) {
+    int got = 0;
+    while (got < len) {
+        int n = (int)read(fd, buf + got, (size_t)(len - got));
+        if (n <= 0) return 0;
+        got += n;
+    }
+    return 1;
+}
 
 /* parse a line from stdin into a ClientCommand struct, returns 0 on unknown verb */
 static int parse_command(const char *line, ClientCommand *cmd) {
@@ -42,26 +64,68 @@ static int parse_command(const char *line, ClientCommand *cmd) {
 }
 
 /*
- * Handshake: generate a random 48-byte pre-master secret, send it to the
- * server, then derive session keys from it on both sides.
+ * TLS-style handshake:
+ * 1. Receive server's RSA public key (SPKI DER)
+ * 2. Generate a random 48-byte PMS
+ * 3. Encrypt PMS with server's public key (OAEP) and send it
+ * 4. Derive session keys from the PMS
  */
 static int do_handshake(int fd, SessionKeys *keys_out) {
+    uint32_t net_len;
+    int pub_len;
+    unsigned char pub_der[1024]; /* enough for a 2048-bit RSA SPKI */
+    const unsigned char *p;
+    EVP_PKEY *server_pub = NULL;
     unsigned char pms[TLS_PMS_LEN];
-    int sent = 0;
+    unsigned char enc_pms[512];
+    size_t enc_len = sizeof(enc_pms);
+    EVP_PKEY_CTX *enc_ctx = NULL;
+    uint32_t enc_net_len;
+    int ret = 0;
 
+    /* receive server's public key */
+    if (!read_all(fd, (unsigned char *)&net_len, 4)) return 0;
+    pub_len = (int)ntohl(net_len);
+    if (pub_len <= 0 || pub_len > (int)sizeof(pub_der)) return 0;
+    if (!read_all(fd, pub_der, pub_len)) return 0;
+
+    p = pub_der;
+    server_pub = d2i_PUBKEY(NULL, &p, pub_len);
+    if (server_pub == NULL) return 0;
+
+    /* generate PMS and encrypt with server's public key */
     if (!generate_pms(pms)) {
+        EVP_PKEY_free(server_pub);
         return 0;
     }
 
-    while (sent < TLS_PMS_LEN) {
-        int n = (int)write(fd, pms + sent, (size_t)(TLS_PMS_LEN - sent));
-        if (n <= 0) {
-            return 0;
-        }
-        sent += n;
+    enc_ctx = EVP_PKEY_CTX_new(server_pub, NULL);
+    if (enc_ctx == NULL) {
+        EVP_PKEY_free(server_pub);
+        return 0;
     }
 
-    return derive_session_keys(pms, keys_out);
+    if (EVP_PKEY_encrypt_init(enc_ctx) <= 0 ||
+        EVP_PKEY_CTX_set_rsa_padding(enc_ctx, RSA_PKCS1_OAEP_PADDING) <= 0 ||
+        EVP_PKEY_encrypt(enc_ctx, enc_pms, &enc_len, pms, TLS_PMS_LEN) <= 0) {
+        EVP_PKEY_CTX_free(enc_ctx);
+        EVP_PKEY_free(server_pub);
+        return 0;
+    }
+    EVP_PKEY_CTX_free(enc_ctx);
+    EVP_PKEY_free(server_pub);
+
+    /* send encrypted PMS */
+    enc_net_len = htonl((uint32_t)enc_len);
+    if (!write_all(fd, (unsigned char *)&enc_net_len, 4) ||
+        !write_all(fd, enc_pms, (int)enc_len)) {
+        memset(pms, 0, sizeof(pms));
+        return 0;
+    }
+
+    ret = derive_session_keys(pms, keys_out);
+    memset(pms, 0, sizeof(pms)); /* clear PMS from stack */
+    return ret;
 }
 
 /*
