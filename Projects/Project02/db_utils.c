@@ -125,7 +125,7 @@ int add_user(UserRecord **head_ptr, const char *username,
         return 0;
     }
 
-    if (strnlen(username, MAX_USERNAME_LEN) >= MAX_USERNAME_LEN - 1) {
+    if (strlen(username) >= MAX_USERNAME_LEN) {
         return 0;
     }
 

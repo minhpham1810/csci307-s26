@@ -1,4 +1,4 @@
-gcc#include <stdio.h>
+#include <stdio.h>
 #include "db_utils.h"
 
 int main(void) {

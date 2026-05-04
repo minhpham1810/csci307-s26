@@ -133,7 +133,6 @@ static void do_command_loop(int fd, const SessionKeys *keys,
         fflush(stdout);
 
         if (fgets(line, sizeof(line), stdin) == NULL) {
-            /* EOF — send exit gracefully. */
             memset(&cmd, 0, sizeof(cmd));
             cmd.type = CMD_EXIT;
             send_record(fd, keys, (unsigned char *)&cmd, (int)sizeof(cmd));
@@ -167,8 +166,6 @@ static void do_command_loop(int fd, const SessionKeys *keys,
         }
     }
 }
-
-/* ---------- main ----------------------------------------------------- */
 
 int main(int argc, char *argv[]) {
     int fd;

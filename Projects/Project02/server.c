@@ -13,7 +13,6 @@
 
 static UserRecord *g_db_head = NULL;
 
-/* ---------- helpers -------------------------------------------------- */
 
 static int send_error(int fd, const SessionKeys *keys, const char *msg) {
     ServerResponse resp;
